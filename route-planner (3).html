@@ -162,6 +162,18 @@
     .house-addr { font-size: 10px; color: var(--muted); font-family: 'DM Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
     @media (max-width: 699px) { .house-addr { display: none; } }
 
+    /* Daily toggle */
+    .daily-toggle {
+      flex-shrink: 0; border: 1px solid; border-radius: 4px;
+      font-family: 'DM Mono', monospace; font-size: 10px; font-weight: 500;
+      padding: 2px 6px; cursor: pointer; transition: all 0.15s;
+      -webkit-tap-highlight-color: transparent; background: none; line-height: 1.4;
+      white-space: nowrap;
+    }
+    .daily-toggle.is-daily  { border-color: var(--accent);  color: var(--accent); }
+    .daily-toggle.is-sometimes { border-color: #f0a060; color: #f0a060; }
+    @media (max-width: 699px) { .daily-toggle { min-width: 32px; min-height: 28px; font-size: 11px; padding: 3px 7px; } }
+
     /* Move up/down buttons */
     .move-btn { background: none; border: 1px solid var(--border); color: var(--muted); cursor: pointer; font-size: 11px; padding: 2px 6px; border-radius: 4px; flex-shrink: 0; line-height: 1.4; transition: all 0.15s; -webkit-tap-highlight-color: transparent; }
     .move-btn:hover { border-color: var(--accent2); color: var(--accent2); }
@@ -682,7 +694,7 @@ async function addHouseToRoad(roadId, houseNumber) {
   if (!road) return;
   if (totalStops() >= MAX_STOPS) { toast(`Max ${MAX_STOPS} stops reached`, true); return; }
 
-  const stop = { id: Date.now() + Math.random(), houseNumber, display: '', lat: null, lng: null, marker: null, loading: true, error: false };
+  const stop = { id: Date.now() + Math.random(), houseNumber, display: '', lat: null, lng: null, marker: null, loading: true, error: false, daily: true };
   road.houses.push(stop);
   renderList(); updateStats();
 
@@ -840,6 +852,7 @@ function renderList() {
         <div class="dest-dot" style="background:${color(gIdx)}"></div>
         <span class="house-num">${house.loading ? '<span class="spinner"></span>' : ''}${house.error ? '⚠ ' : ''}${house.houseNumber}</span>
         ${shortAddr ? `<span class="house-addr">${shortAddr}</span>` : ''}
+        <button class="daily-toggle ${house.daily !== false ? 'is-daily' : 'is-sometimes'}" title="Toggle daily/sometimes">${house.daily !== false ? '✓ Daily' : '~ Some'}</button>
         <button class="move-btn up-house" title="Move up">↑</button>
         <button class="move-btn down-house" title="Move down">↓</button>
         <button class="dest-remove" title="Remove">×</button>`;
@@ -849,6 +862,12 @@ function renderList() {
       if (hI === 0) uBtn.disabled = true;
       if (hI === road.houses.length - 1) dBtn.disabled = true;
 
+      row.querySelector('.daily-toggle').addEventListener('click', e => {
+        e.stopPropagation();
+        house.daily = house.daily === false ? true : false;
+        renderList();
+        if (currentView === 'check') renderCheckList();
+      });
       uBtn.addEventListener('click', () => moveHouse(rI, hI, -1));
       dBtn.addEventListener('click', () => moveHouse(rI, hI, +1));
       row.querySelector('.dest-remove').addEventListener('click', () => removeHouse(rI, hI));
@@ -930,7 +949,7 @@ async function calculateRoute() {
 // ── Copy / Paste ──────────────────────────────────────────────────────────────
 function routeJSON() {
   return JSON.stringify(
-    roads.map(r => ({ roadName: r.roadName, houses: r.houses.map(h => ({ houseNumber: h.houseNumber, display: h.display, lat: h.lat, lng: h.lng })) }))
+    roads.map(r => ({ roadName: r.roadName, houses: r.houses.map(h => ({ houseNumber: h.houseNumber, display: h.display, lat: h.lat, lng: h.lng, daily: h.daily })) }))
   );
 }
 
@@ -942,7 +961,7 @@ function applyPastedJSON(text) {
     const road = { id: Date.now() + Math.random(), roadName: rd.roadName, houses: [] };
     roads.push(road);
     for (const h of rd.houses) {
-      const stop = { id: Date.now() + Math.random(), houseNumber: h.houseNumber, display: h.display || '', lat: h.lat, lng: h.lng, marker: null, loading: false, error: false };
+      const stop = { id: Date.now() + Math.random(), houseNumber: h.houseNumber, display: h.display || '', lat: h.lat, lng: h.lng, marker: null, loading: false, error: false, daily: h.daily !== false };
       if (h.lat) {
         const idx = globalIdx(roads.length - 1, road.houses.length);
         stop.marker = L.marker([h.lat, h.lng], { icon: makeIcon(idx) }).addTo(map)
@@ -1462,13 +1481,16 @@ function renderCheckList() {
   const list = document.getElementById('check-list');
   const q    = checkSearchQuery.trim().toLowerCase();
 
-  // Build merged map: streetName → [houseNumbers...]
+  // Build merged map: streetName → { daily: [...], sometimes: [...] }
   const streetMap = new Map();
   roads.forEach(road => {
     const key = road.roadName.trim();
-    if (!streetMap.has(key)) streetMap.set(key, []);
+    if (!streetMap.has(key)) streetMap.set(key, { daily: [], sometimes: [] });
     road.houses.forEach(h => {
-      if (!h.error && !h.loading) streetMap.get(key).push(h.houseNumber);
+      if (!h.error && !h.loading) {
+        if (h.daily !== false) streetMap.get(key).daily.push(h.houseNumber);
+        else                   streetMap.get(key).sometimes.push(h.houseNumber);
+      }
     });
   });
 
@@ -1479,10 +1501,12 @@ function renderCheckList() {
   if (q) entries = entries.filter(([name]) => name.toLowerCase().includes(q));
 
   // Summary line
-  const totalUnique = streetMap.size;
-  const totalHouses = [...streetMap.values()].reduce((s, v) => s + v.length, 0);
+  const totalUnique  = streetMap.size;
+  const totalDaily   = [...streetMap.values()].reduce((s, v) => s + v.daily.length, 0);
+  const totalSome    = [...streetMap.values()].reduce((s, v) => s + v.sometimes.length, 0);
+  const totalHouses  = totalDaily + totalSome;
   document.getElementById('check-summary').textContent =
-    `${totalUnique} unique street${totalUnique !== 1 ? 's' : ''} · ${totalHouses} stop${totalHouses !== 1 ? 's' : ''}` +
+    `${totalUnique} street${totalUnique !== 1 ? 's' : ''} · ${totalDaily} daily · ${totalSome} sometimes` +
     (q ? ` · ${entries.length} matching` : '');
 
   list.innerHTML = '';
@@ -1492,7 +1516,8 @@ function renderCheckList() {
     return;
   }
 
-  entries.forEach(([streetName, houses]) => {
+  entries.forEach(([streetName, { daily, sometimes }]) => {
+    const total  = daily.length + sometimes.length;
     const isOpen = checkOpenStreets.has(streetName) || (q.length > 0);
 
     const block = document.createElement('div');
@@ -1515,7 +1540,8 @@ function renderCheckList() {
     header.innerHTML = `
       <span class="check-chevron">▶</span>
       <span class="check-street-name">${displayName}</span>
-      <span class="check-badge">${houses.length} stop${houses.length !== 1 ? 's' : ''}</span>`;
+      ${daily.length    ? `<span class="check-badge" style="background:rgba(200,240,96,0.12);color:var(--accent);border-color:rgba(200,240,96,0.3)">✓ ${daily.length}</span>` : ''}
+      ${sometimes.length ? `<span class="check-badge" style="background:rgba(240,160,96,0.12);color:#f0a060;border-color:rgba(240,160,96,0.3)">~ ${sometimes.length}</span>` : ''}`;
 
     header.addEventListener('click', () => {
       const nowOpen = !block.classList.contains('open');
@@ -1527,12 +1553,19 @@ function renderCheckList() {
     // Houses
     const housesDiv = document.createElement('div');
     housesDiv.className = 'check-houses';
-    // Sort house numbers numerically where possible
-    const sorted = [...houses].sort((a, b) => {
+
+    const sortNums = arr => [...arr].sort((a, b) => {
       const na = parseInt(a), nb = parseInt(b);
       return isNaN(na) || isNaN(nb) ? a.localeCompare(b) : na - nb;
     });
-    housesDiv.innerHTML = sorted.map(h => `<span class="check-house-pill">${h}</span>`).join('');
+
+    const dailySorted     = sortNums(daily);
+    const sometimesSorted = sortNums(sometimes);
+
+    let html = '';
+    if (dailySorted.length)     html += dailySorted.map(h    => `<span class="check-house-pill" style="border-color:rgba(200,240,96,0.3);color:var(--accent)">${h}</span>`).join('');
+    if (sometimesSorted.length) html += sometimesSorted.map(h => `<span class="check-house-pill" style="border-color:rgba(240,160,96,0.3);color:#f0a060">${h}</span>`).join('');
+    housesDiv.innerHTML = html;
 
     block.appendChild(header);
     block.appendChild(housesDiv);
